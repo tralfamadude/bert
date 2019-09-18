@@ -25,6 +25,8 @@ import modeling
 import optimization
 import tokenization
 import tensorflow as tf
+import pandas as pd
+import re
 
 flags = tf.flags
 
@@ -74,6 +76,14 @@ flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
 flags.DEFINE_bool(
     "do_predict", False,
     "Whether to run the model in inference mode on the test set.")
+
+flags.DEFINE_bool(
+    "do_serve", False,
+    "Whether to export the built model.")
+
+flags.DEFINE_string(
+    "export_dir", None,
+    "The output directory where the model checkpoints will be written.")
 
 flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")
 
@@ -290,6 +300,83 @@ class MnliProcessor(DataProcessor):
         label = tokenization.convert_to_unicode(line[-1])
       examples.append(
           InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+    return examples
+
+class ImdbProcessor(DataProcessor):
+  """Processor for the IMDB data set."""
+
+  def load_directory_data(self, directory):
+    data = {}
+    data["id"] = []
+    data["sentence"] = []
+    data["sentiment"] = []
+    for file_path in os.listdir(directory):
+      with tf.gfile.GFile(os.path.join(directory, file_path), "r") as f:
+        data["sentence"].append(f.read())
+        meta = re.match("(\d+)_(\d+)\.txt", file_path)
+        data["id"].append(meta.group(1))
+        data["sentiment"].append(meta.group(2))
+    return pd.DataFrame.from_dict(data)
+
+
+  def load_dataset(self, directory, set_type):
+    pos_df = self.load_directory_data(os.path.join(directory, "pos"))
+    neg_df = self.load_directory_data(os.path.join(directory, "neg"))
+    pos_df["polarity"] = "positive"
+    neg_df["polarity"] = "negative"
+    return self._create_examples(
+      pd.concat([pos_df, neg_df]).sample(frac=1).reset_index(drop=True),
+      set_type
+    )
+
+  def __init__(self):
+    self.dataset = tf.keras.utils.get_file(
+      fname="aclImdb.tar.gz", 
+      origin="http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz", 
+      extract=True)
+
+  def get_train_examples(self, data_dir):
+    """See base class."""
+    return self.load_dataset(
+      os.path.join(
+        os.path.dirname(self.dataset),
+        "aclImdb", 
+        "train"),
+        "train"
+    )
+
+  def get_dev_examples(self, data_dir):
+    """See base class."""
+    return self.load_dataset(
+      os.path.join(
+        os.path.dirname(self.dataset),
+        "aclImdb", 
+        "test"),
+        "dev"
+    )
+
+  def get_test_examples(self, data_dir):
+    """See base class."""
+    return self.load_dataset(
+      os.path.join(
+        os.path.dirname(self.dataset),
+        "aclImdb", 
+        "test"),
+        "test"
+    )
+
+  def get_labels(self):
+    """See base class."""
+    return ["negative", "positive"]
+
+  def _create_examples(self, lines, set_type):
+    """Creates examples for the training and dev sets."""
+    examples = lines.apply(lambda x: InputExample(guid=x['id'], # Globally unique ID for bookkeeping, unused in this example
+                                       text_a = x['sentence'], 
+                                       text_b = None, 
+                                       label = x['polarity'] if set_type != "test" else "negative"
+                                      ), axis = 1
+                )
     return examples
 
 
@@ -618,7 +705,7 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
 
 def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, use_tpu,
-                     use_one_hot_embeddings):
+                     use_one_hot_embeddings, do_serve):
   """Returns `model_fn` closure for TPUEstimator."""
 
   def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
@@ -657,7 +744,7 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
           return tf.train.Scaffold()
 
         scaffold_fn = tpu_scaffold
-      else:
+      elif not do_serve:
         tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
     tf.logging.info("**** Trainable Variables ****")
@@ -788,14 +875,15 @@ def main(_):
       "mnli": MnliProcessor,
       "mrpc": MrpcProcessor,
       "xnli": XnliProcessor,
+      "imdb": ImdbProcessor,
   }
 
   tokenization.validate_case_matches_checkpoint(FLAGS.do_lower_case,
                                                 FLAGS.init_checkpoint)
 
-  if not FLAGS.do_train and not FLAGS.do_eval and not FLAGS.do_predict:
+  if not FLAGS.do_train and not FLAGS.do_eval and not FLAGS.do_predict and not FLAGS.do_serve:
     raise ValueError(
-        "At least one of `do_train`, `do_eval` or `do_predict' must be True.")
+        "At least one of `do_train`, `do_eval` or `do_predict' or `do_serve` must be True.")
 
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
@@ -805,7 +893,7 @@ def main(_):
         "was only trained up to sequence length %d" %
         (FLAGS.max_seq_length, bert_config.max_position_embeddings))
 
-  tf.gfile.MakeDirs(FLAGS.output_dir)
+  tf.io.gfile.makedirs(FLAGS.output_dir)
 
   task_name = FLAGS.task_name.lower()
 
@@ -838,6 +926,7 @@ def main(_):
   train_examples = None
   num_train_steps = None
   num_warmup_steps = None
+  # if train load train examples
   if FLAGS.do_train:
     train_examples = processor.get_train_examples(FLAGS.data_dir)
     num_train_steps = int(
@@ -852,7 +941,9 @@ def main(_):
       num_train_steps=num_train_steps,
       num_warmup_steps=num_warmup_steps,
       use_tpu=FLAGS.use_tpu,
-      use_one_hot_embeddings=FLAGS.use_tpu)
+      use_one_hot_embeddings=FLAGS.use_tpu,
+      do_serve=FLAGS.do_serve
+  )
 
   # If TPU is not available, this will fall back to normal Estimator on CPU
   # or GPU.
@@ -970,6 +1061,25 @@ def main(_):
         writer.write(output_line)
         num_written_lines += 1
     assert num_written_lines == num_actual_predict_examples
+
+  if FLAGS.do_serve:
+    def serving_input_fn():
+      with tf.variable_scope("serving_input_fn"):
+        feature_spec = {
+            "input_ids": tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+            "input_mask": tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+            "segment_ids": tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+            "label_ids": tf.FixedLenFeature([], tf.int64),
+          }
+        serialized_tf_example = tf.placeholder(dtype=tf.string,
+                                               shape=[None],
+                                               name='input_example_tensor')
+        receiver_tensors = {'examples': serialized_tf_example}
+        features = tf.parse_example(serialized_tf_example, feature_spec)
+        return tf.estimator.export.ServingInputReceiver(features, receiver_tensors)
+
+    estimator._export_to_tpu = False  # this is important
+    path = estimator.export_savedmodel(FLAGS.export_dir, serving_input_fn)
 
 
 if __name__ == "__main__":
