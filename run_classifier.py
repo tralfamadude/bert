@@ -1076,12 +1076,6 @@ def main(_):
           'label_ids': label_ids,
         })()
         return input_fn
-        serialized_tf_example = tf.placeholder(dtype=tf.string,
-                                               shape=[None],
-                                               name='input_example_tensor')
-        receiver_tensors = {'examples': serialized_tf_example}
-        features = tf.parse_example(serialized_tf_example, feature_spec)
-        return tf.estimator.export.ServingInputReceiver(features, receiver_tensors)
     estimator._export_to_tpu = False  # this is important
     path = estimator.export_savedmodel(FLAGS.export_dir, serving_input_fn)
 
