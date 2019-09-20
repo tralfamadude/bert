@@ -1068,7 +1068,7 @@ def main(_):
         input_ids = tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64)
         input_mask = tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64)
         segment_ids = tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64)
-        label_ids = tf.FixedLenFeature([], tf.int64)
+        label_ids = tf.FixedLenFeature([1], tf.int64)
         input_fn = tf.estimator.export.build_raw_serving_input_receiver_fn({
           'input_ids': input_ids,
           'input_mask': input_mask,
