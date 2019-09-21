@@ -1064,18 +1064,17 @@ def main(_):
 
   if FLAGS.do_serve:
     def serving_input_fn():
-      with tf.variable_scope("serving_input_fn"):
-        input_ids = tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64)
-        input_mask = tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64)
-        segment_ids = tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64)
-        label_ids = tf.FixedLenFeature([1], tf.int64)
-        input_fn = tf.estimator.export.build_raw_serving_input_receiver_fn({
-          'input_ids': input_ids,
-          'input_mask': input_mask,
-          'segment_ids': segment_ids,
-          'label_ids': label_ids,
-        })()
-        return input_fn
+      input_ids = tf.placeholder(tf.int32, [None, FLAGS.max_seq_length], name='input_ids')
+      input_mask = tf.placeholder(tf.int32, [None, FLAGS.max_seq_length], name='input_mask')
+      segment_ids = tf.placeholder(tf.int32, [None, FLAGS.max_seq_length], name='segment_ids')
+      label_ids = tf.placeholder(tf.int32, [None], name='label_ids')
+      input_fn = tf.estimator.export.build_raw_serving_input_receiver_fn({
+        'input_ids': input_ids,
+        'input_mask': input_mask,
+        'segment_ids': segment_ids,
+        'label_ids': label_ids,
+      })()
+      return input_fn
     estimator._export_to_tpu = False  # this is important
     path = estimator.export_savedmodel(FLAGS.export_dir, serving_input_fn)
 
